@@ -1,1 +1,434 @@
-# BE_electricity-payment-code-assignment
+# GiaoDich — Backend
+
+Express + MongoDB API phục vụ hệ thống quản lý mã cước điện (V-GREEN / EVNCPC).
+
+---
+
+## Mục lục
+
+1. [Yêu cầu hệ thống](#1-yêu-cầu-hệ-thống)
+2. [Cấu trúc thư mục](#2-cấu-trúc-thư-mục)
+3. [Biến môi trường (.env)](#3-biến-môi-trường-env)
+4. [Chạy với Docker](#4-chạy-với-docker)
+5. [Chạy ở chế độ dev (không Docker)](#5-chạy-ở-chế-độ-dev-không-docker)
+6. [Import dữ liệu từ Excel](#6-import-dữ-liệu-từ-excel)
+7. [Cấu trúc cơ sở dữ liệu (MongoDB)](#7-cấu-trúc-cơ-sở-dữ-liệu-mongodb)
+8. [API Reference](#8-api-reference)
+9. [Luồng nghiệp vụ chính](#9-luồng-nghiệp-vụ-chính)
+10. [Restore dữ liệu từ dump](#10-restore-dữ-liệu-từ-dump)
+
+---
+
+## 1. Yêu cầu hệ thống
+
+| Phần mềm | Phiên bản tối thiểu |
+|----------|---------------------|
+| Node.js  | 20+                 |
+| Docker Desktop | bất kỳ       |
+| MongoDB Compass (tuỳ chọn) | bất kỳ |
+
+---
+
+## 2. Cấu trúc thư mục
+
+```
+backend/
+├── src/
+│   ├── index.ts                  # Entry point — khởi tạo Express, mount router
+│   ├── services/
+│   │   ├── vouchers/router.ts    # /api/vouchers — danh sách & sửa profile mã
+│   │   ├── electric-bills/router.ts  # /api/electric-bills — quản lý hóa đơn theo kỳ
+│   │   ├── billing-scan/router.ts    # /api/billing-scan — kết quả quét cước
+│   │   ├── agencies/router.ts    # /api/agencies — đại lý (sẽ tách service riêng)
+│   │   └── customer-accounts/router.ts  # /api/customer-accounts
+│   ├── models/
+│   │   ├── ElectricBillRecord.ts # Hóa đơn điện theo tháng + kỳ thanh toán
+│   │   ├── VoucherCode.ts        # Mã cước (code + status)
+│   │   ├── AuditLog.ts           # Lịch sử thao tác
+│   │   ├── Agency.ts             # Đại lý
+│   │   ├── AssignedCode.ts       # Giao mã theo tháng (chống trùng)
+│   │   ├── BillingScanHistory.ts # Lịch sử quét
+│   │   └── CustomerAccount.ts    # Tài khoản khách hàng EVN
+│   ├── lib/
+│   │   ├── mongodb.ts            # Kết nối Mongoose (cached)
+│   │   ├── electric-bill-serialize.ts  # DTO mapper ElectricBillRecord → JSON
+│   │   ├── electric-bill-completion.ts # Kiểm tra đủ điều kiện hoàn tất kỳ
+│   │   ├── electric-bill-mongo-periods.ts  # Chuyển DTO period → Mongo schema
+│   │   ├── period-scan-merge.ts  # Điền số tiền quét vào kỳ 1→2→3
+│   │   ├── scan-ddmm.ts          # Validate ngày thanh toán DD/MM
+│   │   ├── agency-registry.ts    # Chuyển list đại lý → cây (tree)
+│   │   ├── agency-repository.ts  # CRUD đại lý (MongoDB)
+│   │   ├── openai-vision.ts      # OCR ảnh CCCD/hóa đơn qua OpenAI
+│   │   ├── audit.ts              # Ghi AuditLog
+│   │   └── format-vnd.ts         # Format số tiền VND
+│   ├── data/
+│   │   └── vgreen-scanned-batch.ts  # Dữ liệu hardcode dùng cho seed:vgreen
+│   └── types/
+│       ├── electric-bill.ts      # DTO types
+│       └── voucher.ts            # VoucherRow type
+├── scripts/
+│   ├── import-billing-from-xlsx.ts   # ★ Import Excel → electricbillrecords
+│   ├── import-modules-from-xlsx.ts   # Import danh mục module → systemmodules
+│   ├── seed-vgreen-electric-bills.ts # Seed hardcode V-GREEN T3/2026
+│   ├── seed-voucher-codes.ts         # Seed VoucherCode từ VGREEN_SCANNED_BATCH
+│   └── restore-mongo-seed-to-docker.ps1  # Restore mongodump vào Docker
+├── mongo-seed/                   # Dữ liệu khởi tạo MongoDB lần đầu (init scripts)
+├── docker-compose.yml            # Backend + MongoDB container
+├── .env.example                  # Mẫu biến môi trường
+└── package.json
+```
+
+---
+
+## 3. Biến môi trường (.env)
+
+Copy file mẫu rồi chỉnh:
+
+```bash
+cp .env.example .env
+```
+
+| Biến | Mô tả | Giá trị mặc định |
+|------|-------|-----------------|
+| `MONGODB_URI` | URI kết nối MongoDB | `mongodb://localhost:27018/giaodich_voucher` |
+| `MONGO_HOST_PORT` | Cổng host publish Mongo (Docker) | `27018` |
+| `PORT` | Cổng Express | `3001` |
+| `CORS_ORIGIN` | Origin cho phép CORS | `http://localhost:3000` |
+| `OPENAI_API_KEY` | API key OpenAI (dùng cho OCR ảnh CCCD) | — |
+| `OPENAI_VISION_MODEL` | Model OCR hình ảnh | `gpt-4o-mini` |
+| `BILLING_XLSX_PATH` | Đường dẫn file Excel cước (tuỳ chọn) | — |
+
+> **Lưu ý cổng:** Mongo trong Docker dùng cổng nội bộ `27017`; host dùng `27018` (mặc định) để tránh xung đột với Mongo cài máy. Frontend/dev kết nối qua `localhost:27018`.
+
+---
+
+## 4. Chạy với Docker
+
+### Khởi động lần đầu
+
+```bash
+# Từ thư mục backend/
+docker compose up -d --build
+```
+
+Lệnh này sẽ:
+1. Build image backend từ `Dockerfile`
+2. Kéo image `mongo:7`
+3. Tạo volume `mongo_data` (dữ liệu bền vững)
+4. Chạy backend tại `http://localhost:3001`
+5. Chạy MongoDB tại `localhost:27018` (host) / `mongo:27017` (nội bộ compose)
+
+### Kiểm tra trạng thái
+
+```bash
+docker compose ps
+docker compose logs -f backend
+docker compose logs -f mongo
+```
+
+### Dừng hệ thống
+
+```bash
+docker compose down          # giữ dữ liệu
+docker compose down -v       # xóa cả volume (reset database)
+```
+
+### Kết nối MongoDB Compass
+
+```
+mongodb://localhost:27018
+Database: giaodich_voucher
+```
+
+### Health check
+
+```bash
+curl http://localhost:3001/health
+# → {"ok":true}
+```
+
+---
+
+## 5. Chạy ở chế độ dev (không Docker)
+
+> Cần MongoDB đang chạy (có thể chỉ chạy `docker compose up -d mongo`).
+
+```bash
+# Cài dependencies
+npm install
+
+# Chạy dev với hot-reload (tsx watch)
+npm run dev
+```
+
+Server khởi động tại `http://localhost:3001`.
+
+---
+
+## 6. Import dữ liệu từ Excel
+
+### 6.1 Import mã cước từ file Excel (dùng hàng ngày)
+
+Đây là script chính để đưa dữ liệu từ Excel vào UI **trang Quét cước**.
+
+**Cấu trúc file Excel:**
+
+| Cột A | Cột B | Cột C |
+|-------|-------|-------|
+| Mã khách hàng | Số tiền (VND) | Hạn thanh toán (DD/MM) |
+| `PC05II0947012` | `15.892.913` | `06/04` |
+| `PA05040062618` | `32,961,427` | `09/04` |
+
+- Dòng đầu nếu là header sẽ tự động bị bỏ qua
+- Số tiền chấp nhận định dạng: `15.892.913`, `15,892,913`, `15892913`
+- Cột C (hạn) là tuỳ chọn — bỏ trống không sao
+
+**Chạy lệnh:**
+
+```bash
+# Từ thư mục backend/
+npm run seed:billing -- ./maHĐ.xlsx
+
+# Hoặc dùng biến môi trường
+BILLING_XLSX_PATH=./maHĐ.xlsx npm run seed:billing
+```
+
+Sau khi chạy xong → F5 trang Quét cước trên UI sẽ thấy dữ liệu.
+
+### 6.2 Seed dữ liệu hardcode V-GREEN T3/2026
+
+```bash
+npm run seed:vgreen
+```
+
+Đọc từ `src/data/vgreen-scanned-batch.ts` (20 mã hardcode), upsert vào `electricbillrecords`.
+
+### 6.3 Seed VoucherCode từ VGREEN_SCANNED_BATCH
+
+```bash
+npm run seed:vouchers
+```
+
+Tạo bản ghi `VoucherCode` (collection `vouchercodes`) với `status: 1` (đã quét, có bill) cho mỗi mã trong `VGREEN_SCANNED_BATCH`.
+
+### 6.4 Import danh mục module từ Excel (dùng riêng)
+
+```bash
+npm run seed:modules -- ./danhMucModule.xlsx
+```
+
+Lưu vào collection `systemmodules` — không liên quan đến luồng cước điện.
+
+---
+
+## 7. Cấu trúc cơ sở dữ liệu (MongoDB)
+
+Database: **`giaodich_voucher`**
+
+### Collection: `electricbillrecords`
+
+Collection trung tâm — mỗi document là một hóa đơn cước của một khách hàng theo tháng.
+
+```
+{
+  customerCode: "PC05II0947012",   // Mã khách hàng EVN (unique/tháng)
+  year: 2026,
+  month: 3,
+  monthLabel: "T3/2026",
+  company: "V-GREEN",
+  evn: "EVNCPC",
+  periods: [                        // 3 kỳ thanh toán trong tháng
+    {
+      ky: 1,                        // Kỳ 1, 2 hoặc 3
+      amount: 15892913,             // Số tiền VND (null nếu chưa có cước)
+      paymentDeadline: "...",       // Hạn thanh toán (ISO)
+      scanDdMm: "06/04",           // Ngày thanh toán DD/MM (nhập tay)
+      ca: "10h" | "16h" | "24h",  // Ca thanh toán
+      assignedAgencyId: "...",      // ID đại lý được giao
+      assignedAgencyName: "...",
+      dlGiaoName: "...",            // Tên đại lý giao thực tế
+      paymentConfirmed: false,      // Đã xác nhận thanh toán
+      cccdConfirmed: false,         // Đã xác nhận CCCD
+      customerName: "...",          // Tên chủ hộ
+      cardType: "...",              // Loại thẻ
+      dealCompletedAt: null         // Thời điểm hoàn tất kỳ (→ Đi mail)
+    },
+    { ky: 2, ... },
+    { ky: 3, ... }
+  ],
+  assignedAgencyId: "...",          // Tổng: đại lý được giao (bill-level)
+  dealCompletedAt: null             // Tổng: hoàn tất tất cả kỳ
+}
+```
+
+**Index:** `{ customerCode, year, month }` unique — mỗi khách hàng chỉ có 1 bản ghi/tháng.
+
+### Collection: `vouchercodes`
+
+Theo dõi trạng thái xử lý từng mã cước.
+
+```
+{
+  code: "PC05II0947012",   // Mã khách hàng (unique)
+  status: 0 | 1 | 2 | 3 | 4
+    // 0 = Chờ quét
+    // 1 = Đã quét, có bill
+    // 2 = Đã upload OCR, chờ duyệt
+    // 3 = Đã duyệt
+    // 4 = Hoàn thành (đã gửi mail)
+  billingScanHasBill: true | false | null
+}
+```
+
+### Collection: `agencies`
+
+Danh sách đại lý (sẽ tách ra service riêng).
+
+### Collection: `auditlogs`
+
+Ghi lại mọi thao tác thay đổi dữ liệu (actor, action, entity, timestamp).
+
+---
+
+## 8. API Reference
+
+Base URL: `http://localhost:3001`
+
+### Vouchers — `/api/vouchers`
+
+| Method | Path | Mô tả |
+|--------|------|-------|
+| GET | `/api/vouchers` | Danh sách mã cước. Query: `?status=0\|1\|2\|3\|4` |
+| PATCH | `/api/vouchers/:id/profile` | Cập nhật thủ công thông tin khách hàng (customerProfile) |
+| POST | `/api/vouchers/:id/ocr` | OCR ảnh CCCD/hóa đơn qua OpenAI Vision |
+| POST | `/api/vouchers/:id/approve` | Duyệt mã (status → 3) |
+
+### Electric Bills — `/api/electric-bills`
+
+| Method | Path | Mô tả |
+|--------|------|-------|
+| GET | `/api/electric-bills/unassigned` | Hóa đơn chưa giao đại lý. Query: `?amountFilter=lt30\|lt70\|lt100\|lt300\|lte500\|gt500` |
+| GET | `/api/electric-bills/invoice-list` | Toàn bộ hóa đơn còn kỳ chưa hoàn tất |
+| GET | `/api/electric-bills/invoice-completed-months` | Các tháng đã có hóa đơn hoàn tất |
+| GET | `/api/electric-bills/invoice-completed` | Hóa đơn hoàn tất theo tháng. Query: `?year=&month=` |
+| GET | `/api/electric-bills/mail-queue` | Các kỳ đã hoàn tất (đủ điều kiện gửi mail/hoàn tiền) |
+| GET | `/api/electric-bills/assigned-codes` | Tra cứu giao mã. Query: `?agencyId=&customerCode=` |
+| POST | `/api/electric-bills/assign` | Giao hóa đơn cho đại lý. Body: `{ billId, agencyId, agencyName }` |
+| PATCH | `/api/electric-bills/:id` | Cập nhật thông tin kỳ thanh toán (period data) |
+
+### Billing Scan — `/api/billing-scan`
+
+| Method | Path | Mô tả |
+|--------|------|-------|
+| GET | `/api/billing-scan/scanned-codes` | Danh sách mã V-GREEN có cước chưa hoàn tất (dùng cho trang Quét cước) |
+| GET | `/api/billing-scan/history` | Lịch sử quét |
+
+### Agencies — `/api/agencies`
+
+| Method | Path | Mô tả |
+|--------|------|-------|
+| GET | `/api/agencies` | Danh sách đại lý |
+| GET | `/api/agencies/options` | Danh sách đại lý (format tuỳ chọn dropdown) |
+| GET | `/api/agencies/tree` | Cây đại lý |
+| POST | `/api/agencies` | Tạo đại lý mới. Body: `{ name, code? }` |
+
+### Health
+
+```
+GET /health → { "ok": true }
+```
+
+---
+
+## 9. Luồng nghiệp vụ chính
+
+### 9.1 Luồng từ Excel → UI Quét cước
+
+```
+File Excel (mã KH + số tiền + hạn)
+          │
+          ▼
+  npm run seed:billing -- ./maHĐ.xlsx
+          │
+          ▼ upsert (customerCode + year + month)
+  collection: electricbillrecords
+          │
+          ▼ GET /api/billing-scan/scanned-codes
+          │   filter: company=V-GREEN, chưa dealCompletedAt
+          ▼
+  UI: Trang Quét cước
+```
+
+### 9.2 Luồng xử lý kỳ thanh toán
+
+```
+Quét cước            Giao đại lý          Nhập liệu kỳ           Hoàn tất
+──────────────       ────────────────     ─────────────────────   ─────────────
+seed:billing   →   POST /assign      →   PATCH /:id (periods)  →  dealCompletedAt
+(amount,           (assignedAgencyId)    - scanDdMm (DD/MM)        ─────────────
+ deadline)                               - ca (10h/16h/24h)        → mail-queue
+                                         - customerName
+                                         - paymentConfirmed ✓
+                                         - cccdConfirmed ✓
+```
+
+### 9.3 Điều kiện hoàn tất một kỳ (`dealCompletedAt`)
+
+Tất cả điều kiện sau phải đủ trước khi đánh dấu hoàn tất:
+
+- [x] Có số tiền cước (`amount != null`)
+- [x] Đã giao đại lý (`assignedAgencyId` hợp lệ)
+- [x] Đã xác nhận thanh toán (`paymentConfirmed = true`)
+- [x] Đã xác nhận CCCD (`cccdConfirmed = true`)
+- [x] Có tên khách hàng (`customerName` không trống)
+- [x] Có ngày thanh toán hợp lệ (`scanDdMm` định dạng DD/MM, không tương lai)
+- [x] Có ca thanh toán (`ca` = `10h` | `16h` | `24h`)
+
+Khi một kỳ hoàn tất → xuất hiện trong `GET /api/electric-bills/mail-queue` → trang Đi mail & Hoàn tiền.
+
+### 9.4 Luồng VoucherCode (trạng thái mã)
+
+```
+Status 0 (Chờ quét)
+     ↓ seed:vouchers hoặc seed:vgreen
+Status 1 (Đã quét, có bill)
+     ↓ Đại lý upload ảnh CCCD/hóa đơn + OCR
+Status 2 (Chờ duyệt)
+     ↓ Quản lý mã duyệt
+Status 3 (Đã duyệt)
+     ↓ Gửi mail thành công
+Status 4 (Hoàn thành)
+```
+
+---
+
+## 10. Restore dữ liệu từ dump
+
+Nếu có bản dump MongoDB (`mongodump`), restore vào Docker:
+
+```bash
+# Bước 1: đặt dump vào đúng vị trí
+# backend/mongo-seed/dump/giaodich_voucher/  ← thư mục chứa file .bson
+
+# Bước 2: chạy script (PowerShell, từ thư mục backend/)
+npm run docker:restore-mongo-seed
+
+# Hoặc trực tiếp:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore-mongo-seed-to-docker.ps1
+```
+
+Script dùng `mongorestore --drop` — sẽ **ghi đè** collection hiện có.
+
+---
+
+## NPM Scripts nhanh
+
+| Script | Mô tả |
+|--------|-------|
+| `npm run dev` | Chạy dev server với hot-reload |
+| `npm run build` | TypeScript type-check |
+| `npm run seed:billing -- ./file.xlsx` | **Import Excel cước → electricbillrecords** |
+| `npm run seed:vgreen` | Seed hardcode V-GREEN T3/2026 |
+| `npm run seed:vouchers` | Seed VoucherCode từ VGREEN_SCANNED_BATCH |
+| `npm run seed:modules -- ./file.xlsx` | Import danh mục module → systemmodules |
+| `npm run docker:restore-mongo-seed` | Restore mongodump vào Docker Mongo |
