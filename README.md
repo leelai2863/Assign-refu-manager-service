@@ -10,12 +10,13 @@ Express + MongoDB API phục vụ hệ thống quản lý mã cước điện (V
 2. [Cấu trúc thư mục](#2-cấu-trúc-thư-mục)
 3. [Biến môi trường (.env)](#3-biến-môi-trường-env)
 4. [Chạy với Docker](#4-chạy-với-docker)
-5. [Chạy ở chế độ dev (không Docker)](#5-chạy-ở-chế-độ-dev-không-docker)
-6. [Import dữ liệu từ Excel](#6-import-dữ-liệu-từ-excel)
-7. [Cấu trúc cơ sở dữ liệu (MongoDB)](#7-cấu-trúc-cơ-sở-dữ-liệu-mongodb)
-8. [API Reference](#8-api-reference)
-9. [Luồng nghiệp vụ chính](#9-luồng-nghiệp-vụ-chính)
-10. [Restore dữ liệu từ dump](#10-restore-dữ-liệu-từ-dump)
+5. [Deploy production (Docker, bảo mật)](#5-deploy-production-docker-bảo-mật)
+6. [Chạy ở chế độ dev (không Docker)](#6-chạy-ở-chế-độ-dev-không-docker)
+7. [Import dữ liệu từ Excel](#7-import-dữ-liệu-từ-excel)
+8. [Cấu trúc cơ sở dữ liệu (MongoDB)](#8-cấu-trúc-cơ-sở-dữ-liệu-mongodb)
+9. [API Reference](#9-api-reference)
+10. [Luồng nghiệp vụ chính](#10-luồng-nghiệp-vụ-chính)
+11. [Restore dữ liệu từ dump](#11-restore-dữ-liệu-từ-dump)
 
 ---
 
@@ -73,8 +74,10 @@ backend/
 │   ├── seed-voucher-codes.ts         # Seed VoucherCode từ VGREEN_SCANNED_BATCH
 │   └── restore-mongo-seed-to-docker.ps1  # Restore mongodump vào Docker
 ├── mongo-seed/                   # Dữ liệu khởi tạo MongoDB lần đầu (init scripts)
-├── docker-compose.yml            # Backend + MongoDB container
-├── .env.example                  # Mẫu biến môi trường
+├── docker-compose.yml            # Dev: Mongo publish cổng host (27018)
+├── docker-compose.prod.yml       # Production: Mongo không publish cổng
+├── .env.example                  # Mẫu biến môi trường (dev)
+├── .env.prod.example             # Mẫu biến cho docker-compose.prod.yml
 └── package.json
 ```
 
@@ -149,7 +152,47 @@ curl http://localhost:3001/health
 
 ---
 
-## 5. Chạy ở chế độ dev (không Docker)
+## 5. Deploy production (Docker, bảo mật)
+
+Dùng file [`docker-compose.prod.yml`](docker-compose.prod.yml) thay cho `docker-compose.yml` khi lên **server thật**.
+
+| So sánh | `docker-compose.yml` (dev) | `docker-compose.prod.yml` (prod) |
+|---------|---------------------------|-----------------------------------|
+| Mongo publish cổng host | Có (`27018:27017`) — seed từ máy, Compass | **Không** — Mongo chỉ lắng nghe trong mạng Docker |
+| `CORS_ORIGIN` | Mặc định `http://localhost:3000` | **Trên Internet:** set URL frontend thật (HTTPS) trong `.env.prod` (compose có fallback localhost nếu quên) |
+| API ra ngoài | `3001:3001` (đổi được `BACKEND_HOST_PORT`) | Giữ `3001` (hoặc đổi `BACKEND_HOST_PORT`) |
+
+### Khởi động trên server
+
+```bash
+cd backend
+cp .env.prod.example .env.prod
+# Sửa .env.prod: CORS_ORIGIN=https://app.cua-ban.com
+
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+```
+
+- Backend nội bộ vẫn dùng `MONGODB_URI=mongodb://mongo:27017/giaodich_voucher` — **không cần** mở Mongo ra internet.
+- Đặt reverse proxy (Nginx / Traefik) phía trước cổng `3001` nếu cần HTTPS và domain.
+
+### Import Excel trên prod (Mongo không mở cổng host)
+
+Script đã được copy vào image (`Dockerfile` có `COPY scripts`). Trên server:
+
+```bash
+# Copy file Excel vào container
+docker cp ./maHĐ.xlsx giaodich-backend:/tmp/maHĐ.xlsx
+
+# Chạy import (URI nội bộ giống backend)
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec backend \
+  sh -c 'MONGODB_URI=mongodb://mongo:27017/giaodich_voucher npx tsx scripts/import-billing-from-xlsx.ts /tmp/maHĐ.xlsx'
+```
+
+Hoặc dùng CI/CD chạy job one-off trên cùng Docker network với `MONGODB_URI=mongodb://mongo:27017/...`.
+
+---
+
+## 6. Chạy ở chế độ dev (không Docker)
 
 > Cần MongoDB đang chạy (có thể chỉ chạy `docker compose up -d mongo`).
 
@@ -165,9 +208,9 @@ Server khởi động tại `http://localhost:3001`.
 
 ---
 
-## 6. Import dữ liệu từ Excel
+## 7. Import dữ liệu từ Excel
 
-### 6.1 Import mã cước từ file Excel (dùng hàng ngày)
+### 7.1 Import mã cước từ file Excel (dùng hàng ngày)
 
 Đây là script chính để đưa dữ liệu từ Excel vào UI **trang Quét cước**.
 
@@ -195,7 +238,7 @@ BILLING_XLSX_PATH=./maHĐ.xlsx npm run seed:billing
 
 Sau khi chạy xong → F5 trang Quét cước trên UI sẽ thấy dữ liệu.
 
-### 6.2 Seed dữ liệu hardcode V-GREEN T3/2026
+### 7.2 Seed dữ liệu hardcode V-GREEN T3/2026
 
 ```bash
 npm run seed:vgreen
@@ -203,7 +246,7 @@ npm run seed:vgreen
 
 Đọc từ `src/data/vgreen-scanned-batch.ts` (20 mã hardcode), upsert vào `electricbillrecords`.
 
-### 6.3 Seed VoucherCode từ VGREEN_SCANNED_BATCH
+### 7.3 Seed VoucherCode từ VGREEN_SCANNED_BATCH
 
 ```bash
 npm run seed:vouchers
@@ -211,7 +254,7 @@ npm run seed:vouchers
 
 Tạo bản ghi `VoucherCode` (collection `vouchercodes`) với `status: 1` (đã quét, có bill) cho mỗi mã trong `VGREEN_SCANNED_BATCH`.
 
-### 6.4 Import danh mục module từ Excel (dùng riêng)
+### 7.4 Import danh mục module từ Excel (dùng riêng)
 
 ```bash
 npm run seed:modules -- ./danhMucModule.xlsx
@@ -221,7 +264,7 @@ Lưu vào collection `systemmodules` — không liên quan đến luồng cướ
 
 ---
 
-## 7. Cấu trúc cơ sở dữ liệu (MongoDB)
+## 8. Cấu trúc cơ sở dữ liệu (MongoDB)
 
 Database: **`giaodich_voucher`**
 
@@ -290,7 +333,7 @@ Ghi lại mọi thao tác thay đổi dữ liệu (actor, action, entity, timest
 
 ---
 
-## 8. API Reference
+## 9. API Reference
 
 Base URL: `http://localhost:3001`
 
@@ -340,9 +383,9 @@ GET /health → { "ok": true }
 
 ---
 
-## 9. Luồng nghiệp vụ chính
+## 10. Luồng nghiệp vụ chính
 
-### 9.1 Luồng từ Excel → UI Quét cước
+### 10.1 Luồng từ Excel → UI Quét cước
 
 ```
 File Excel (mã KH + số tiền + hạn)
@@ -359,7 +402,7 @@ File Excel (mã KH + số tiền + hạn)
   UI: Trang Quét cước
 ```
 
-### 9.2 Luồng xử lý kỳ thanh toán
+### 10.2 Luồng xử lý kỳ thanh toán
 
 ```
 Quét cước            Giao đại lý          Nhập liệu kỳ           Hoàn tất
@@ -372,7 +415,7 @@ seed:billing   →   POST /assign      →   PATCH /:id (periods)  →  dealComp
                                          - cccdConfirmed ✓
 ```
 
-### 9.3 Điều kiện hoàn tất một kỳ (`dealCompletedAt`)
+### 10.3 Điều kiện hoàn tất một kỳ (`dealCompletedAt`)
 
 Tất cả điều kiện sau phải đủ trước khi đánh dấu hoàn tất:
 
@@ -386,7 +429,7 @@ Tất cả điều kiện sau phải đủ trước khi đánh dấu hoàn tất
 
 Khi một kỳ hoàn tất → xuất hiện trong `GET /api/electric-bills/mail-queue` → trang Đi mail & Hoàn tiền.
 
-### 9.4 Luồng VoucherCode (trạng thái mã)
+### 10.4 Luồng VoucherCode (trạng thái mã)
 
 ```
 Status 0 (Chờ quét)
@@ -402,7 +445,7 @@ Status 4 (Hoàn thành)
 
 ---
 
-## 10. Restore dữ liệu từ dump
+## 11. Restore dữ liệu từ dump
 
 Nếu có bản dump MongoDB (`mongodump`), restore vào Docker:
 
@@ -432,3 +475,5 @@ Script dùng `mongorestore --drop` — sẽ **ghi đè** collection hiện có.
 | `npm run seed:vouchers` | Seed VoucherCode từ VGREEN_SCANNED_BATCH |
 | `npm run seed:modules -- ./file.xlsx` | Import danh mục module → systemmodules |
 | `npm run docker:restore-mongo-seed` | Restore mongodump vào Docker Mongo |
+| `npm run docker:prod:up` | Production: `docker compose -f docker-compose.prod.yml` (cần file `.env.prod`) |
+| `npm run docker:prod:down` | Dừng stack production |
