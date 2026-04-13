@@ -69,7 +69,6 @@ backend/
 │       └── voucher.ts            # VoucherRow type
 ├── scripts/
 │   ├── import-billing-from-xlsx.ts   # ★ Import Excel → electricbillrecords
-│   ├── import-modules-from-xlsx.ts   # Import danh mục module → systemmodules
 │   ├── seed-vgreen-electric-bills.ts # Seed hardcode V-GREEN T3/2026
 │   ├── seed-voucher-codes.ts         # Seed VoucherCode từ VGREEN_SCANNED_BATCH
 │   └── restore-mongo-seed-to-docker.ps1  # Restore mongodump vào Docker
@@ -97,8 +96,6 @@ cp .env.example .env
 | `MONGO_HOST_PORT` | Cổng host publish Mongo (Docker) | `27018` |
 | `PORT` | Cổng Express | `3001` |
 | `CORS_ORIGIN` | Origin cho phép CORS | `http://localhost:3000` |
-| `OPENAI_API_KEY` | API key OpenAI (dùng cho OCR ảnh CCCD) | — |
-| `OPENAI_VISION_MODEL` | Model OCR hình ảnh | `gpt-4o-mini` |
 | `BILLING_XLSX_PATH` | Đường dẫn file Excel cước (tuỳ chọn) | — |
 
 > **Lưu ý cổng:** Mongo trong Docker dùng cổng nội bộ `27017`; host dùng `27018` (mặc định) để tránh xung đột với Mongo cài máy. Frontend/dev kết nối qua `localhost:27018`.
@@ -253,14 +250,6 @@ npm run seed:vouchers
 ```
 
 Tạo bản ghi `VoucherCode` (collection `vouchercodes`) với `status: 1` (đã quét, có bill) cho mỗi mã trong `VGREEN_SCANNED_BATCH`.
-
-### 7.4 Import danh mục module từ Excel (dùng riêng)
-
-```bash
-npm run seed:modules -- ./danhMucModule.xlsx
-```
-
-Lưu vào collection `systemmodules` — không liên quan đến luồng cước điện.
 
 ---
 
@@ -473,7 +462,6 @@ Script dùng `mongorestore --drop` — sẽ **ghi đè** collection hiện có.
 | `npm run seed:billing -- ./file.xlsx` | **Import Excel cước → electricbillrecords** |
 | `npm run seed:vgreen` | Seed hardcode V-GREEN T3/2026 |
 | `npm run seed:vouchers` | Seed VoucherCode từ VGREEN_SCANNED_BATCH |
-| `npm run seed:modules -- ./file.xlsx` | Import danh mục module → systemmodules |
 | `npm run docker:restore-mongo-seed` | Restore mongodump vào Docker Mongo |
 | `npm run docker:prod:up` | Production: `docker compose -f docker-compose.prod.yml` (cần file `.env.prod`) |
 | `npm run docker:prod:down` | Dừng stack production |
