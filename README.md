@@ -152,7 +152,9 @@ curl http://localhost:3001/health
 
 **Tài liệu triển khai qua `scp` và chạy trên server:** [docs/DEPLOY-SCP-SERVER.md](docs/DEPLOY-SCP-SERVER.md).
 
-Dùng file [`docker-compose.prod.yml`](docker-compose.prod.yml) thay cho `docker-compose.yml` khi lên **server thật**.
+Dùng file [`docker-compose.prod.yml`](docker-compose.prod.yml) thay cho `docker-compose.yml` khi lên **server thật** (build image tại chỗ).
+
+**CI/CD (GitHub Actions + GHCR, không build trên server):** xem [docs/cicd-deploy.md](docs/cicd-deploy.md). Compose kéo image: [`docker-compose.deploy.yml`](docker-compose.deploy.yml).
 
 | So sánh | `docker-compose.yml` (dev) | `docker-compose.prod.yml` (prod) |
 |---------|---------------------------|-----------------------------------|
